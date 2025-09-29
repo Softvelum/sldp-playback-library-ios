@@ -1,6 +1,4 @@
-# An iOS library for SLDP playback
-
-Read more about our SLDP open source playback [in this blog post](https://softvelum.com/2025/08/sldp-exoplayer-media3-open-source/).
+# iOS library and sample player for SLDP playback
 
 ## Usage
 
@@ -9,8 +7,7 @@ Drag and drop this folder
 ```swift
 sldp
 ```
-
-files in your project
+files in your project.
 
 ### Add bridging header
 ```swift
@@ -18,6 +15,7 @@ sldp/SldpPlayer-Bridging-Header.h
 ```
 
 ### Simple Example
+Use this code to add SLDP playback in your existing app.
 ```swift
 let sampleBufferLayer = AVSampleBufferDisplayLayer()
 sampleBufferLayer.frame = view.bounds
@@ -33,3 +31,12 @@ engine.setVideoLayer(sampleBufferLayer)
 
 engine.createStream(config)
 ```
+
+### Sample player
+
+Open player.xcodeproj, this project contains complete code to make your own SLDP player from scratch.
+
+
+
+Also check our SLDP open source playback on Android [in this blog post](https://softvelum.com/2025/08/sldp-exoplayer-media3-open-source/).
+
