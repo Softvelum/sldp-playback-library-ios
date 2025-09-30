@@ -2,7 +2,7 @@
 
 ## Usage
 
-### Add sldp playback library
+### Add SLDP playback library
 Drag and drop this folder
 ```swift
 sldp
@@ -37,6 +37,6 @@ engine.createStream(config)
 Open player.xcodeproj, this project contains complete code to make your own SLDP player from scratch.
 
 
-
+Also, [read introduction blog post](https://softvelum.com/2025/08/sldp-exoplayer-media3-open-source/) about this initiative.
 Also check our SLDP open source playback on Android [in this blog post](https://softvelum.com/2025/08/sldp-exoplayer-media3-open-source/).
 
