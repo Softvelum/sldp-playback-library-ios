@@ -5,6 +5,10 @@
     double _lastSyncTime;
     uint64_t _stableСount;
     double _sumDeviation;
+    BOOL _videoRenderingSuspended;
+    BOOL _videoRemovalPending;
+    BOOL _waitingForVideoKeyFrame;
+    BOOL _backgroundAudioNeedsAnchor;
 }
 
 const double MIN_DEVIATION = 0.03;
@@ -22,7 +26,68 @@ const double SYNCTIME_NOT_INITED = -1e6;
     return self;
 }
 
+- (void)restoreVideoRenderer {
+    if (self.stopped || _videoRenderingSuspended || _videoRemovalPending || self.numVideoFrames == 0) {
+        return;
+    }
+    [self.displayLayer flushAndRemoveImage];
+    if (![_renderSynchronizer.renderers containsObject:self.displayLayer]) {
+        [_renderSynchronizer addRenderer:self.displayLayer];
+    }
+}
+
+- (void)setVideoRenderingSuspended:(BOOL)suspended {
+    @synchronized (self) {
+        if (suspended && self.playbackType == kPlaybackTypeAudioOnly) {
+            return;
+        }
+        if (_videoRenderingSuspended == suspended) {
+            return;
+        }
+        _videoRenderingSuspended = suspended;
+        if (suspended) {
+            _waitingForVideoKeyFrame = YES;
+            if (self.numVideoFrames == 0) {
+                _backgroundAudioNeedsAnchor = YES;
+            }
+            if (!_videoRemovalPending && [_renderSynchronizer.renderers containsObject:self.displayLayer]) {
+                _videoRemovalPending = YES;
+                __weak SldpMediaPlayerV11 *weakSelf = self;
+                [_renderSynchronizer removeRenderer:self.displayLayer atTime:kCMTimeInvalid completionHandler:^(BOOL didRemoveRenderer) {
+                    SldpMediaPlayerV11 *player = weakSelf;
+                    if (player == nil) {
+                        return;
+                    }
+                    @synchronized (player) {
+                        player->_videoRemovalPending = NO;
+                        [player restoreVideoRenderer];
+                    }
+                }];
+            }
+        } else {
+            [self restoreVideoRenderer];
+        }
+    }
+}
+
+- (bool)writeVideoFrameWithTimestamp:(uint64_t)timestamp composition_time_offset:(uint32_t)composition_time_offset buffer:(const uint8_t *)buffer len:(int)len key_frame:(bool)key_frame {
+    @synchronized (self) {
+        if (_videoRenderingSuspended || _videoRemovalPending || (_waitingForVideoKeyFrame && !key_frame)) {
+            [self updateVideoStreamPositionWithTimestamp:timestamp];
+            return true;
+        }
+        _waitingForVideoKeyFrame = NO;
+        return [super writeVideoFrameWithTimestamp:timestamp composition_time_offset:composition_time_offset buffer:buffer len:len key_frame:key_frame];
+    }
+}
+
 -(void)stop: (bool)removeImage {
+    @synchronized (self) {
+        [self stopLocked:removeImage];
+    }
+}
+
+-(void)stopLocked: (bool)removeImage {
     if (self.stopped) {
         return;
     }
@@ -160,7 +225,17 @@ const double SYNCTIME_NOT_INITED = -1e6;
         return false;
     }
     
-    if (self.playbackType == kPlaybackTypeAudioOnly) {
+    BOOL audioOnly;
+    BOOL needsAnchor;
+    @synchronized (self) {
+        audioOnly = self.playbackType == kPlaybackTypeAudioOnly || _videoRenderingSuspended;
+        needsAnchor = _backgroundAudioNeedsAnchor && _videoRenderingSuspended;
+        _backgroundAudioNeedsAnchor = NO;
+    }
+    if (needsAnchor) {
+        _numAudioFrames = 0;
+    }
+    if (audioOnly) {
         if (_numAudioFrames == 0) {
             self.zeroTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
             self.streamZeroPtsMs = self.audioZeroPtsMs;
@@ -199,6 +274,9 @@ const double SYNCTIME_NOT_INITED = -1e6;
 //        return;
 //    }
     
+    BOOL audioTimelineRunning = self.numVideoFrames == 0 && self.rate > 0.f;
+    CMTime audioZeroTime = self.zeroTime;
+    uint64_t audioStreamZero = self.streamZeroPtsMs;
     bool result = [super updateStreamPosition:sampleBuffer];
     if (!result) {
         return false;
@@ -206,9 +284,16 @@ const double SYNCTIME_NOT_INITED = -1e6;
 
     if (self.numVideoFrames == 1) {
         NSLog(@"start video at %f", CMTimeGetSeconds(self.zeroTime));
-        [_renderSynchronizer addRenderer:self.displayLayer];
-        self.rate = 0.0;
-        [_renderSynchronizer setRate:self.rate time:self.zeroTime];
+        if (![_renderSynchronizer.renderers containsObject:self.displayLayer]) {
+            [_renderSynchronizer addRenderer:self.displayLayer];
+        }
+        if (audioTimelineRunning) {
+            self.zeroTime = audioZeroTime;
+            self.streamZeroPtsMs = audioStreamZero;
+        } else {
+            self.rate = 0.0;
+            [_renderSynchronizer setRate:self.rate time:self.zeroTime];
+        }
     } else if (self.steadyMode) {
         if (_lastSyncTime == SYNCTIME_NOT_INITED) {
             [self adjustPlaybackRate: self.zeroTime];

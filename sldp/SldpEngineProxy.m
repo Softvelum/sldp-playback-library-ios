@@ -106,4 +106,8 @@
     return [_engine getSrtStats:connectionID stats:stats clear:clear instantaneous:instantaneous];
 }
 
+- (void)setVideoRenderingSuspended:(BOOL)suspended {
+    [_engine setVideoRenderingSuspended:suspended];
+}
+
 @end

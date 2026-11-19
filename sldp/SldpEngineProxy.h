@@ -43,4 +43,7 @@
 -(bool)getSrtStats:(int)connectionID stats:(PlayerSrtStats* _Nonnull ) stats clear:(bool)clear instantaneous:(bool)instantaneous;
 
 
+// Suspend video presentation while preserving the audio timeline and connection.
+- (void)setVideoRenderingSuspended:(BOOL)suspended;
+
 @end

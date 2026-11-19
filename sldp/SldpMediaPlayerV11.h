@@ -13,5 +13,8 @@ API_AVAILABLE(ios(11.0))
 @property uint64_t audioZeroBiasTs;
 @property NSTimer* steadyWaitTimer;
 
+// Suspend video presentation while preserving the audio timeline and connection.
+- (void)setVideoRenderingSuspended:(BOOL)suspended;
+
 @end
 

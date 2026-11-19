@@ -42,4 +42,7 @@ typedef NS_ENUM(int, AbrState) {
 
 @property (weak) id<SldpEngineDelegate> _Nullable frameListener;
 
+// Suspend video presentation while preserving the audio timeline and connection.
+- (void)setVideoRenderingSuspended:(BOOL)suspended;
+
 @end

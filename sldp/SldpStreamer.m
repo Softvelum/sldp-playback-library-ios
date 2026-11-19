@@ -29,6 +29,7 @@
     CMVideoDimensions _initialResolution;
 
     bool _muted;
+    BOOL _videoRenderingSuspended;
     AudioCodecType _audioCodec;
 }
 @end
@@ -99,6 +100,9 @@
     [_player setDisplayLayer:displayLayer];
     [_player setMuted:_muted];
     [_player setVideoChatMode: config.videoChatMode];
+    if ([_player isKindOfClass:[SldpMediaPlayerV11 class]]) {
+        [(SldpMediaPlayerV11 *)_player setVideoRenderingSuspended:_videoRenderingSuspended];
+    }
     
     BaseConnection* connection;
     if ([uri.scheme caseInsensitiveCompare:@"ws"] == NSOrderedSame ||
@@ -696,5 +700,12 @@
     return false;
 }
 
+
+- (void)setVideoRenderingSuspended:(BOOL)suspended {
+    _videoRenderingSuspended = suspended;
+    if ([_player isKindOfClass:[SldpMediaPlayerV11 class]]) {
+        [(SldpMediaPlayerV11 *)_player setVideoRenderingSuspended:suspended];
+    }
+}
 
 @end
