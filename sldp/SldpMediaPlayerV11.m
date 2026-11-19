@@ -72,12 +72,44 @@ const double SYNCTIME_NOT_INITED = -1e6;
 
 - (bool)writeVideoFrameWithTimestamp:(uint64_t)timestamp composition_time_offset:(uint32_t)composition_time_offset buffer:(const uint8_t *)buffer len:(int)len key_frame:(bool)key_frame {
     @synchronized (self) {
+        if (self.stopped) {
+            return false;
+        }
         if (_videoRenderingSuspended || _videoRemovalPending || (_waitingForVideoKeyFrame && !key_frame)) {
             [self updateVideoStreamPositionWithTimestamp:timestamp];
             return true;
         }
         _waitingForVideoKeyFrame = NO;
         return [super writeVideoFrameWithTimestamp:timestamp composition_time_offset:composition_time_offset buffer:buffer len:len key_frame:key_frame];
+    }
+}
+
+-(void)startStarvationTimer {
+    @synchronized (self) {
+        if (self.stopped) {
+            return;
+        }
+        self.renderStartRealTime = [NSDate date];
+    }
+    __weak SldpMediaPlayerV11 *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SldpMediaPlayerV11 *player = weakSelf;
+        if (player == nil) {
+            return;
+        }
+        @synchronized (player) {
+            if (!player.stopped && !player.starvationTimer.valid) {
+                player.starvationTimer = [NSTimer scheduledTimerWithTimeInterval:0.3f target:player selector:@selector(verifyStarvation) userInfo:nil repeats:YES];
+            }
+        }
+    });
+}
+
+-(void)verifyStarvation {
+    @synchronized (self) {
+        if (!self.stopped) {
+            [super verifyStarvation];
+        }
     }
 }
 
@@ -168,6 +200,15 @@ const double SYNCTIME_NOT_INITED = -1e6;
 }
 
 - (bool)writeAudioFrameWithTimestamp:(uint64_t)timestamp numSamples:(uint32_t)numSamples buffer:(const uint8_t *)buffer len:(int)len {
+    @synchronized (self) {
+        if (self.stopped) {
+            return false;
+        }
+        return [self writeAudioFrameLockedWithTimestamp:timestamp numSamples:numSamples buffer:buffer len:len];
+    }
+}
+
+- (bool)writeAudioFrameLockedWithTimestamp:(uint64_t)timestamp numSamples:(uint32_t)numSamples buffer:(const uint8_t *)buffer len:(int)len {
     
     //NSLog(@"PlayerV11::writeAudioFrameWithTimestamp %llu len=%d", timestamp, len);
     
@@ -260,6 +301,11 @@ const double SYNCTIME_NOT_INITED = -1e6;
 //        return true;
 //    }
     
+    if (self.stopped) {
+        CFRelease(blockBuffer);
+        CFRelease(sampleBuffer);
+        return false;
+    }
     _numAudioFrames++;
     [_audioRenderer enqueueSampleBuffer:sampleBuffer];
     CFRelease(blockBuffer);
@@ -358,6 +404,14 @@ const double SYNCTIME_NOT_INITED = -1e6;
 }
 
 -(void)changePlaybackRate:(float) newRate {
+    @synchronized (self) {
+        if (!self.stopped) {
+            [self changePlaybackRateLocked:newRate];
+        }
+    }
+}
+
+-(void)changePlaybackRateLocked:(float) newRate {
     if (_timeObserverToken == NULL) {
         NSLog(@"init observation timer");
         CMTime timeInterval = CMTimeMakeWithSeconds(0.1, 1000);
@@ -371,6 +425,9 @@ const double SYNCTIME_NOT_INITED = -1e6;
         [self.delegate playbackDidStart];
     }
 
+    if (self.stopped) {
+        return;
+    }
     if (fabs(newRate-self.rate) < 0.01) {
         return;
     }

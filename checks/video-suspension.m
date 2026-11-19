@@ -21,13 +21,21 @@
 @property NSMutableArray *removals;
 @property float testRate;
 @property (copy) void (^beforeAdd)(void);
+@property (copy) void (^beforeSetRate)(void);
 -(void)finishRemovals;
 @end
 @implementation TestSynchronizer
 -(id)init { if ((self = [super init])) { _attached = [NSMutableArray new]; _removals = [NSMutableArray new]; _testRate = 1.0; } return self; }
 -(NSArray *)renderers { return [_attached copy]; }
 -(float)rate { return _testRate; }
--(void)setRate:(float)rate time:(CMTime)time { _testRate = rate; }
+-(void)setRate:(float)rate time:(CMTime)time {
+    if (rate > 0 && self.beforeSetRate) {
+        void (^beforeSetRate)(void) = self.beforeSetRate;
+        self.beforeSetRate = nil;
+        beforeSetRate();
+    }
+    _testRate = rate;
+}
 -(void)addRenderer:(id<AVQueuedSampleBufferRendering>)renderer {
     NSCAssert(![_attached containsObject:renderer], @"Duplicate renderer attachment");
     void (^beforeAdd)(void) = self.beforeAdd;
@@ -49,6 +57,21 @@
         completion(removed);
     }
 }
+@end
+
+@interface SldpMediaPlayerV11 (RateRegressionCheck)
+-(void)changePlaybackRate:(float)rate;
+@end
+
+@interface AudioStartDelegate : NSObject<SldpMediaPlayerDelegate>
+@property (weak) SldpMediaPlayerV11 *owner;
+@property NSUInteger startedAfterStop;
+@end
+@implementation AudioStartDelegate
+-(void)videoBufferLevelDidChangeSeconds:(float)level Frames:(int)frames PlaybackRate:(float)rate {}
+-(void)starvationStateChanged:(bool)isStarvation {}
+-(void)playbackDidStart { if (self.owner.stopped) { self.startedAfterStop++; } }
+-(void)playbackDidFail {}
 @end
 
 int main(void) {
@@ -131,7 +154,44 @@ int main(void) {
         NSCAssert([audioOnly writeAudioFrameWithTimestamp:48000 numSamples:1024 buffer:&packet len:1], @"Audio-only packet must remain accepted");
         NSCAssert(audioOnly.numAudioFrames == 6 && audioSync.rate == 1.0, @"Audio-only streams must not reanchor or pause when video is suspended");
         [audioOnly stop:NO]; [audioSync finishRemovals];
-        puts("Video suspension: background, return, rapid return, stop, overlapping stop and audio-only no-op passed");
+        SldpMediaPlayerV11 *buffering = [[SldpMediaPlayerV11 alloc] initWithBuffer:1500 andThreshold:1000 externalDecoding:NO];
+        TestSynchronizer *bufferSync = [TestSynchronizer new];
+        AVSampleBufferAudioRenderer *bufferAudio = (AVSampleBufferAudioRenderer *)[TestRenderer new];
+        buffering.renderSynchronizer = bufferSync; buffering.audioRenderer = bufferAudio;
+        [bufferSync addRenderer:bufferAudio];
+        buffering.playbackType = kPlaybackTypeVideoAudio;
+        buffering.numVideoFrames = 1; buffering.numAudioFrames = 1;
+        buffering.timescaleAudio = 48000; buffering.audioZeroPtsMs = 0; buffering.rate = 0;
+        buffering.zeroTime = kCMTimeZero; bufferSync.testRate = 0;
+        CMAudioFormatDescriptionRef bufferDescription;
+        NSCAssert(CMAudioFormatDescriptionCreate(kCFAllocatorDefault, &format, 0, NULL, 0, NULL, NULL, &bufferDescription) == noErr, @"Buffering test format must be valid");
+        buffering.audioDesc = bufferDescription;
+        AudioStartDelegate *delegate = [AudioStartDelegate new]; delegate.owner = buffering; buffering.delegate = delegate;
+        [buffering setVideoRenderingSuspended:YES];
+        dispatch_semaphore_t audioStopEntered = dispatch_semaphore_create(0);
+        dispatch_semaphore_t audioStopped = dispatch_semaphore_create(0);
+        __block BOOL stoppedDuringAudioStart = NO;
+        bufferSync.beforeSetRate = ^{
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+                dispatch_semaphore_signal(audioStopEntered);
+                [buffering stop:NO]; dispatch_semaphore_signal(audioStopped);
+            });
+            NSCAssert(dispatch_semaphore_wait(audioStopEntered, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0, @"Audio stopper must start");
+            stoppedDuringAudioStart = dispatch_semaphore_wait(audioStopped, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC)) == 0;
+        };
+        [buffering writeAudioFrameWithTimestamp:96000 numSamples:1024 buffer:&packet len:1];
+        if (!stoppedDuringAudioStart) {
+            NSCAssert(dispatch_semaphore_wait(audioStopped, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC)) == 0, @"Audio stop must finish after the packet");
+        }
+        [bufferSync finishRemovals];
+        NSCAssert(!stoppedDuringAudioStart && bufferSync.rate == 0 && delegate.startedAfterStop == 0, @"Audio start must serialize with stop and cannot restart a stopped timeline");
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.03]];
+        NSCAssert(buffering.starvationTimer == nil || !buffering.starvationTimer.valid, @"Queued timer must not be created after stop");
+        NSCAssert(![buffering writeAudioFrameWithTimestamp:97000 numSamples:1024 buffer:&packet len:1], @"Stopped player must reject late audio packets");
+        NSCAssert(![buffering writeVideoFrameWithTimestamp:10000 composition_time_offset:0 buffer:NULL len:0 key_frame:NO], @"Stopped player must reject late video packets");
+        [buffering changePlaybackRate:1.0];
+        NSCAssert(bufferSync.rate == 0 && delegate.startedAfterStop == 0, @"Queued rate callback must not revive a stopped timeline");
+        puts("Video suspension and buffering audio/stop regressions passed");
     }
     return 0;
 }
